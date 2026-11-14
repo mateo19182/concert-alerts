@@ -35,6 +35,21 @@ def library_catalogue(path):
     return artists, issues
 
 
+def artist_file_catalogue(path):
+    """One artist per line, optionally followed by a tab and a MusicBrainz ID; lines starting # are comments."""
+    artists, seen = [], set()
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, mbid = line.partition("\t")
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            artists.append(Artist(name, name, mbid.strip()))
+    return artists, []
+
+
 def read_library(path):
     return library_catalogue(path)[0]
 

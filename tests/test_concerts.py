@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from concert_alerts.__main__ import DEFAULT_CONFIG, ROOT, main, sync
+from concert_alerts.__main__ import DEFAULT_CONFIG, main, sync
 from concert_alerts.events import select_events
 from concert_alerts.library import Artist, ArtistIndex, library_catalogue, read_library
 from concert_alerts.notify import batches, deliver, select_digest_dates
@@ -88,7 +88,7 @@ def test_all_spain_and_festival_grouping_without_star_filter(library, event):
     assert select_events([event], ArtistIndex(read_library(library)))[0][0]["date"] == "2027-07-11"
 
 
-def test_country_required_but_region_optional(library, event):
+def test_country_required_but_region_optional(library, event, spain):
     index = ArtistIndex(read_library(library))
     venue = event["_embedded"]["venues"][0]
     venue["country"]["countryCode"] = "PT"
@@ -97,9 +97,10 @@ def test_country_required_but_region_optional(library, event):
     assert select_events([event], index)[2] == ["festival-1"]
     venue["country"]["countryCode"] = "ES"
     venue["city"]["name"] = "A Coruña"
-    assert select_events([event], index)[0][0]["highlight"] == "A Coruña · Galicia"
+    assert select_events([event], index)[0][0]["highlight"] == ""
+    assert select_events([event], index, spain)[0][0]["highlight"] == "A Coruña · Galicia"
     venue["city"]["name"] = "Santiago de Compostela"
-    assert select_events([event], index)[0][0]["highlight"] == "Galicia"
+    assert select_events([event], index, spain)[0][0]["highlight"] == "Galicia"
 
 
 def test_event_titles_are_not_artist_matches(library, event):
@@ -251,7 +252,7 @@ def test_sync_passes_configured_horizon_to_digest(tmp_path, library, event, monk
     config = {'navidrome_db': library, 'state_db': tmp_path / 'events.db',
               'report': tmp_path / 'report.json', 'lookahead_days': 90}
     horizons = []
-    def fake_deliver(pending, state, *, lookahead_days, catalogue, max_nationwide_dates):
+    def fake_deliver(pending, state, *, send, lookahead_days, catalogue, max_nationwide_dates):
         horizons.append(lookahead_days)
         assert len(catalogue) == 1 and max_nationwide_dates == 3
         return 0
@@ -304,11 +305,11 @@ def test_hidden_dates_are_counted_but_never_marked_as_delivered(tmp_path, librar
     state.close()
 
 
-def test_galicia_province_codes_qualify_outside_major_cities(library, event):
+def test_galicia_province_codes_qualify_outside_major_cities(library, event, spain):
     venue = event['_embedded']['venues'][0]
     venue['city']['name'] = 'Boiro'
     venue['state'] = {'stateCode': 'ES-C'}
-    assert select_events([event], ArtistIndex(read_library(library)))[0][0]['highlight'] == 'Galicia'
+    assert select_events([event], ArtistIndex(read_library(library)), spain)[0][0]['highlight'] == 'Galicia'
 
 
 @pytest.mark.parametrize('failed_source', ['ra', 'ticketmaster'])
@@ -317,14 +318,14 @@ def test_sources_fail_independently(tmp_path, library, event, failed_source):
               'report': tmp_path / 'report.json', 'ra_enabled': True}
     class TicketmasterSource:
         requests = 1
-        def __init__(self, key): pass
+        def __init__(self, key, **options): pass
         def events(self, start, end):
             if failed_source == 'ticketmaster': raise ProviderError('Ticketmaster unavailable')
             return [event]
         def close(self): pass
     class RASource:
         requests, cache_used, areas = 1, False, []
-        def __init__(self, cache_path): pass
+        def __init__(self, cache_path, **options): pass
         def events(self, start, end):
             if failed_source == 'ra': raise ProviderError('RA unavailable')
             return [{'id': '1', 'title': 'Four Tet', 'date': '2027-07-10T00:00:00',
@@ -419,7 +420,7 @@ def test_missing_page_results_fail_closed(event):
 def test_incomplete_fetch_never_observes_or_delivers(tmp_path, library, monkeypatch):
     config = {"navidrome_db": library, "state_db": tmp_path / "events.db", "report": tmp_path / "report.json"}
     class Broken:
-        def __init__(self, key): pass
+        def __init__(self, key, **options): pass
         def events(self, start, end): raise ProviderError("incomplete")
         def close(self): pass
     monkeypatch.setattr("concert_alerts.__main__.deliver", lambda *_: pytest.fail("incomplete fetch notified"))
@@ -434,7 +435,7 @@ def test_offline_fixtures_cannot_be_sent():
 
 
 def test_cli_configuration_and_library(tmp_path, library, capsys):
-    assert DEFAULT_CONFIG == ROOT / "config/concerts/config.json"
+    assert DEFAULT_CONFIG.name == "config.json"
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"navidrome_db": str(library)}))
     config.chmod(0o600)
@@ -449,16 +450,16 @@ def test_incomplete_check_alerts_only_when_sending(tmp_path, library, event, mon
               'report': tmp_path / 'report.json', 'ra_enabled': True}
     class TicketmasterSource:
         requests = 1
-        def __init__(self, key): pass
+        def __init__(self, key, **options): pass
         def events(self, start, end): return [event]
         def close(self): pass
     class BrokenRA:
         requests, cache_used, areas = 1, False, []
-        def __init__(self, cache_path): pass
+        def __init__(self, cache_path, **options): pass
         def events(self, start, end): raise ProviderError('RA HTTP 503; source unavailable MEDIA:/etc/passwd')
         def close(self): pass
     alerts = []
-    monkeypatch.setattr('concert_alerts.__main__.send_telegram', alerts.append)
+    monkeypatch.setattr('concert_alerts.__main__.send_message', lambda text, **_: alerts.append(text))
     monkeypatch.setattr('concert_alerts.__main__.deliver', lambda *a, **k: 0)
     sync(config, provider_factory=TicketmasterSource, ra_factory=BrokenRA)
     assert alerts == []

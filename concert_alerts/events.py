@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from urllib.parse import quote, urlsplit
 
 from .library import name_key
+from .region import Region
 
 
 def safe_url(value):
@@ -15,26 +16,7 @@ def safe_url(value):
     return value if parsed.scheme == "https" and parsed.hostname and not parsed.username else ""
 
 
-def highlights(venue):
-    city = name_key(venue.get("city", {}).get("name", ""))
-    state = name_key(venue.get("state", {}).get("name", ""))
-    state_code = venue.get("state", {}).get("stateCode", "").upper().removeprefix("ES-")
-    if city in {"a coruña", "la coruña", "a coruna", "la coruna"}:
-        return "A Coruña · Galicia"
-    if city in {"santiago de compostela", "vigo", "ferrol", "lugo", "ourense", "orense", "pontevedra"}:
-        return "Galicia"
-    if state in {"galicia", "a coruña", "la coruña", "a coruna", "la coruna", "lugo", "ourense", "orense", "pontevedra"}:
-        return "Galicia"
-    if state_code in {"GA", "C", "LU", "OU", "PO"}:
-        return "Galicia"
-    if state_code in {"M", "MD", "B"}:
-        return "Barcelona" if state_code == "B" else "Madrid"
-    if city in {"madrid", "barcelona"} or state in {"madrid", "comunidad de madrid", "barcelona"}:
-        return "Madrid" if "madrid" in (city + state) else "Barcelona"
-    return ""
-
-
-def select_events(raw_events, index):
+def select_events(raw_events, index, region=Region()):
     selected, unresolved, unknown_locations = {}, {}, []
     for raw in raw_events:
         venues = raw.get("_embedded", {}).get("venues", [])
@@ -43,7 +25,7 @@ def select_events(raw_events, index):
             continue
         venue = venues[0]
         country = venue.get("country", {}).get("countryCode", "").upper()
-        if country != "ES":
+        if country != region.country:
             if not country:
                 unknown_locations.append(str(raw.get("id", "")))
             continue
@@ -67,7 +49,9 @@ def select_events(raw_events, index):
             "status": dates.get("status", {}).get("code", "unknown"),
             "venue": venue.get("name", ""), "venue_id": str(venue.get("id", "")),
             "city": venue.get("city", {}).get("name", ""), "country": country,
-            "highlight": highlights(venue), "artists": dict(sorted(artists.items())),
+            "highlight": region.highlight(venue.get("city", {}).get("name", ""),
+                                          venue.get("state", {}).get("name", ""),
+                                          venue.get("state", {}).get("stateCode", "")), "artists": dict(sorted(artists.items())),
             "url": safe_url(raw.get("url", "")), "source": "Ticketmaster",
             "lineup_complete": False,
         }
@@ -104,9 +88,8 @@ def notification_signature(event):
             place_key(event["venue"]), place_key(event["city"]), sorted(event["artists"]), status)
 
 
-def select_ra_events(raw_events, index, start=None, end=None):
+def select_ra_events(raw_events, index, start=None, end=None, region=Region()):
     selected, unresolved, unknown_locations = [], [], []
-    provinces = {"15": "C", "27": "LU", "32": "OU", "36": "PO", "28": "M", "08": "B"}
     for raw in raw_events:
         start_time = raw.get("startTime")
         zone = (raw.get("area") or {}).get("ianaTimeZone")
@@ -122,7 +105,7 @@ def select_ra_events(raw_events, index, start=None, end=None):
                 continue
         venue = raw.get("venue") or {}
         area = venue.get("area") or {}
-        if (area.get("country") or {}).get("urlCode", "").upper() != "ES":
+        if (area.get("country") or {}).get("urlCode", "").upper() != region.country:
             unknown_locations.append("ra:" + str(raw["id"]))
             continue
         artists = {}
@@ -148,7 +131,6 @@ def select_ra_events(raw_events, index, start=None, end=None):
         city = postal.group(2).strip() if postal else area.get("name", "")
         if not postal and city in {"North", "South", "East"}:
             city += " (RA area)"
-        province = provinces.get(postal.group(1)[:2], "") if postal else ""
         local_start = raw.get("startTime") or ""
         selected.append({
             "id": "ra:" + str(raw["id"]), "name": raw["title"],
@@ -156,8 +138,8 @@ def select_ra_events(raw_events, index, start=None, end=None):
             "date_unknown": not bool(raw.get("date")), "time_unknown": not bool(local_start),
             "timezone": (raw.get("area") or {}).get("ianaTimeZone") or "",
             "status": "listed", "venue": venue.get("name") or "",
-            "venue_id": "ra:" + str(venue.get("id", "")), "city": city, "country": "ES",
-            "highlight": highlights({"city": {"name": city}, "state": {"stateCode": province}}),
+            "venue_id": "ra:" + str(venue.get("id", "")), "city": city, "country": region.country,
+            "highlight": region.highlight(city, postcode=postal.group(1) if postal else ""),
             "artists": dict(sorted(artists.items())),
             "url": safe_url("https://ra.co/events/" + str(raw["id"])),
             "source": "Resident Advisor", "lineup_complete": False,
@@ -165,21 +147,20 @@ def select_ra_events(raw_events, index, start=None, end=None):
     return selected, unresolved, unknown_locations
 
 
-def select_dice_events(raw_events, index, start=None, end=None):
+def select_dice_events(raw_events, index, start=None, end=None, region=Region()):
     selected, unresolved, unknown_locations = [], [], []
-    provinces = {"15": "C", "27": "LU", "32": "OU", "36": "PO", "28": "M", "08": "B"}
     for raw in raw_events:
         id = "dice:" + raw["url"].rstrip("/").rsplit("/", 1)[-1].split("-", 1)[0]
         try:
             actual_start = datetime.fromisoformat(raw["start"])
             if actual_start.tzinfo is None:
-                actual_start = actual_start.replace(tzinfo=ZoneInfo("Europe/Madrid"))
+                actual_start = actual_start.replace(tzinfo=ZoneInfo(region.timezone))
         except (ValueError, TypeError):
             unknown_locations.append(id)
             continue
         if start is not None and (actual_start < start or (end is not None and actual_start > end)):
             continue
-        if raw.get("country") != "ES":
+        if raw.get("country") != region.country:
             if not raw.get("country"):
                 unknown_locations.append(id)
             continue
@@ -193,14 +174,14 @@ def select_dice_events(raw_events, index, start=None, end=None):
         if not artists:
             continue
         postal = re.search(r"\b(\d{5})\b", raw.get("postal") or raw.get("address") or "")
-        province = provinces.get(postal.group(1)[:2], "") if postal else ""
+        postcode = postal.group(1) if postal else (raw.get("postal") or "")
         city = raw.get("locality") or ""
         # startDate is the venue's wall-clock time with its offset.
         selected.append({
             "id": id, "name": raw["name"], "date": raw["start"][:10], "time": raw["start"][11:19], "date_unknown": False, "time_unknown": not raw["start"][11:19],
-            "timezone": "Europe/Madrid", "status": raw.get("status") or "listed",
-            "venue": raw.get("venue") or "", "venue_id": "", "city": city, "country": "ES",
-            "highlight": highlights({"city": {"name": city}, "state": {"stateCode": province}}),
+            "timezone": region.timezone, "status": raw.get("status") or "listed",
+            "venue": raw.get("venue") or "", "venue_id": "", "city": city, "country": region.country,
+            "highlight": region.highlight(city, postcode=postcode),
             "artists": dict(sorted(artists.items())), "url": safe_url(raw["url"]),
             "source": "DICE", "lineup_complete": False,
         })

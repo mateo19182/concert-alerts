@@ -6,23 +6,34 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .dice import Dice, fill_cache
+from functools import partial
+
+from . import USER_AGENT
+from .dice import SPAIN_PLACES, Dice, fill_cache
 from .events import select_dice_events, select_events, select_ra_events
-from .library import ArtistIndex, library_catalogue
-from .notify import deliver, select_digest_dates, send_telegram, source_alert
+from .library import ArtistIndex, artist_file_catalogue, library_catalogue
+from .notify import DEFAULT_NOTIFY_COMMAND, deliver, select_digest_dates, send_message, source_alert
+from .region import Region
 from .state import State, run_lock
 from .ticketmaster import ProviderError, Ticketmaster
 from .ra import ResidentAdvisor
 
 
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = ROOT / "config/concerts/config.json"
+DEFAULT_CONFIG = Path(os.environ.get("CONCERT_ALERTS_CONFIG")
+                      or Path.home() / ".config/concert-alerts/config.json")
 
 
 def read_config(path):
     if path.stat().st_mode & 0o077:
         raise ValueError("Concert configuration must be private (chmod 600)")
     data = json.loads(path.read_text())
+    Region.from_config(data)
+    if not data.get("navidrome_db") and not data.get("artists_file"):
+        raise ValueError("Set navidrome_db or artists_file")
+    command = data.get("notify_command", list(DEFAULT_NOTIFY_COMMAND))
+    if not command or not all(isinstance(part, str) and part for part in command):
+        raise ValueError("notify_command must be a non-empty list of strings")
+    data["notify_command"] = tuple(command)
     data["max_nationwide_dates"] = int(data.get("max_nationwide_dates", 3))
     for key in ("ra_enabled", "dice_enabled", "dice_notify"):
         if not isinstance(data.get(key, False), bool):
@@ -33,17 +44,32 @@ def read_config(path):
     if data["max_nationwide_dates"] < 0:
         raise ValueError("max_nationwide_dates must be non-negative")
     base = path.parent
-    for key, default in (("navidrome_db", "../navidrome/navidrome.db"),
-                         ("state_db", "../../state/concerts/events.db"),
-                         ("report", "../../state/concerts/latest.json")):
+    for key, default in (("navidrome_db", None), ("artists_file", None),
+                         ("state_db", "state/events.db"), ("report", "state/latest.json")):
+        if data.get(key, default) is None:
+            continue
         value = Path(data.get(key, default))
         data[key] = value if value.is_absolute() else (base / value).resolve()
     return data
 
 
+def load_library(config):
+    if config.get("artists_file"):
+        return artist_file_catalogue(config["artists_file"])
+    return library_catalogue(config["navidrome_db"])
+
+
+def dice_options(config, region):
+    places = config.get("dice_places") or (SPAIN_PLACES if region.country == "ES" else ())
+    return {"places": places, "user_agent": config.get("user_agent", USER_AGENT)}
+
+
 def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_factory=ResidentAdvisor,
          dice_factory=Dice):
-    artists, library_issues = library_catalogue(config["navidrome_db"])
+    region = Region.from_config(config)
+    user_agent = config.get("user_agent", USER_AGENT)
+    notify = partial(send_message, command=tuple(config.get("notify_command", DEFAULT_NOTIFY_COMMAND)))
+    artists, library_issues = load_library(config)
     index = ArtistIndex(artists, config.get("artist_overrides"))
     if not index.artists:
         raise ValueError("No published library artists found; sync stopped")
@@ -56,7 +82,7 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
             raw_events = []
             provider = None
             try:
-                provider = provider_factory(config.get("ticketmaster_api_key", ""))
+                provider = provider_factory(config.get("ticketmaster_api_key", ""), country=region.country)
                 raw_events = provider.events(start, end)
                 sources["Ticketmaster"] = {"status": "ok", "events": len(raw_events)}
             except (ProviderError, ValueError) as error:
@@ -66,7 +92,8 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
                     requests += getattr(provider, "requests", 0)
                     provider.close()
             if config.get("ra_enabled", False):
-                provider = ra_factory(cache_path=Path(config["state_db"]).parent / "ra-cache.json")
+                provider = ra_factory(cache_path=Path(config["state_db"]).parent / "ra-cache.json",
+                                      country=region.country, user_agent=user_agent)
                 try:
                     ra_events = provider.events(start, end)
                     sources["Resident Advisor"] = {"status": "ok", "events": len(ra_events),
@@ -80,7 +107,8 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
                     provider.close()
             if config.get("dice_enabled", False):
                 provider = dice_factory(cache_path=Path(config["state_db"]).parent / "dice-cache.json",
-                                        page_budget=config.get("dice_page_budget", 150))
+                                        page_budget=config.get("dice_page_budget", 150),
+                                        **dice_options(config, region))
                 try:
                     dice_events = provider.events(start, end)
                     sources["DICE"] = {"status": "ok", "events": len(dice_events),
@@ -93,12 +121,12 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
                     provider.close()
             if not any(source["status"] == "ok" for source in sources.values()):
                 raise ProviderError("All configured event sources are unavailable; no notifications sent")
-        events, unresolved, unknown_locations = select_events(raw_events, index)
-        ra_matches, ra_unresolved, ra_locations = select_ra_events(ra_events, index, start, end)
+        events, unresolved, unknown_locations = select_events(raw_events, index, region)
+        ra_matches, ra_unresolved, ra_locations = select_ra_events(ra_events, index, start, end, region)
         events.extend(ra_matches)
         unresolved.extend(ra_unresolved)
         unknown_locations.extend(ra_locations)
-        dice_matches, dice_unresolved, dice_locations = select_dice_events(dice_events, index, start, end)
+        dice_matches, dice_unresolved, dice_locations = select_dice_events(dice_events, index, start, end, region)
         events.extend(dice_matches)
         unresolved.extend(dice_unresolved)
         unknown_locations.extend(dice_locations)
@@ -107,7 +135,7 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
             events, duplicates = state.reconcile(events)
             events.sort(key=lambda e: (not bool(e["highlight"]), e["date"], e["name"], e["id"]))
             pending = state.observe(events)
-            # DICE dates stay in the report but out of Telegram until dice_notify is enabled.
+            # DICE dates stay in the report but out of notifications until dice_notify is enabled.
             held = [] if config.get("dice_notify", False) else [p for p in pending if p[0]["source"] == "DICE"]
             pending = [p for p in pending if p not in held]
             visible, hidden = select_digest_dates(pending, events, config.get("max_nationwide_dates", 3))
@@ -131,13 +159,13 @@ def sync(config, raw_events=None, send=False, provider_factory=Ticketmaster, ra_
             write_report(config["report"], report)
             if send:
                 report["sent_events"] = deliver(
-                    visible, state, lookahead_days=int(config.get("lookahead_days", 365)),
+                    visible, state, send=notify, lookahead_days=int(config.get("lookahead_days", 365)),
                     catalogue=events, max_nationwide_dates=config.get("max_nationwide_dates", 3))
                 write_report(config["report"], report)
                 # A partial check still succeeds, so say so rather than only recording it.
                 alert = source_alert(sources)
                 if alert:
-                    send_telegram(alert)
+                    notify(alert)
             return report
         finally:
             state.close()
@@ -154,11 +182,11 @@ def write_report(path, report):
 GENERIC_FAILURE = ("Concert sync failed. Check private configuration, library access and provider "
                    "availability; no incomplete fetch is notified.")
 # Our own RuntimeError messages; anything else may carry paths or URLs and gets the generic text.
-SAFE_RUNTIME_PREFIXES = ("Hermes ", "Telegram delivery failed", "Another concert sync")
+SAFE_RUNTIME_PREFIXES = ("Notifier ", "Notification delivery failed", "Another concert sync")
 
 
 def write_status(config, mode, error="", sources=None):
-    """Last run outcome beside the report, so a failed run is visible even when Telegram is not."""
+    """Last run outcome beside the report, so a failed run is visible even when the notifier is not."""
     status = {"finished_at": datetime.now(timezone.utc).isoformat(), "mode": mode, "ok": not error,
               "error": error, "unavailable_sources": sorted(
                   name for name, info in (sources or {}).items() if info.get("status") != "ok")}
@@ -170,12 +198,13 @@ def write_status(config, mode, error="", sources=None):
 
 def main(argv=None):
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description="Library concert alerts throughout Spain; dry-run by default")
+    parser = argparse.ArgumentParser(prog="concert-alerts",
+                                     description="Concert alerts for your library's artists; dry-run by default")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("library", help="Check read-only library access")
     run = sub.add_parser("sync", help="Find matching events and write a private report")
-    run.add_argument("--send", action="store_true", help="Deliver pending events through Hermes to Telegram")
+    run.add_argument("--send", action="store_true", help="Deliver pending events through notify_command")
     run.add_argument("--events-file", type=Path, help="Offline Ticketmaster event array; cannot be used with --send")
     warm = sub.add_parser("dice-cache", help="Fill the DICE page cache without matching or sending")
     warm.add_argument("--pages", type=int, default=1500, help="Maximum event pages to fetch")
@@ -195,10 +224,11 @@ def main(argv=None):
         config = read_config(args.config)
         if args.command == "dice-cache":
             with run_lock(config["state_db"]):
-                print(json.dumps(fill_cache(Path(config["state_db"]).parent / "dice-cache.json", args.pages)))
+                print(json.dumps(fill_cache(Path(config["state_db"]).parent / "dice-cache.json", args.pages,
+                                            **dice_options(config, Region.from_config(config)))))
             return 0
         if args.command == "library":
-            artists, issues = library_catalogue(config["navidrome_db"])
+            artists, issues = load_library(config)
             print(json.dumps({"library_artists": len(artists), "library_issues": issues,
                               "sample": [a.name for a in artists[:10]]}, ensure_ascii=False))
             return 0

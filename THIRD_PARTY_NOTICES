@@ -1,4 +1,4 @@
-RA GraphQL query approach adapted from Cuepoint:
+Resident Advisor GraphQL query approach (concert_alerts/ra.py) adapted from Cuepoint:
 https://github.com/danilenzo/cuepoint/blob/master/src/cuepoint/payloads.py
 
 MIT License

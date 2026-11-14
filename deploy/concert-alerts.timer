@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily concert check
+
+[Timer]
+OnCalendar=*-*-* 18:00:00
+Persistent=true
+Unit=concert-alerts.service
+
+[Install]
+WantedBy=timers.target

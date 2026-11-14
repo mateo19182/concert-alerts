@@ -1,0 +1,5 @@
+# One artist per line. Add a tab and a MusicBrainz artist ID to match on ID instead of name.
+# Lines starting with # are ignored.
+Four Tet
+Vulfpeck
+Earth, Wind & Fire

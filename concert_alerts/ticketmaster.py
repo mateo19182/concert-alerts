@@ -9,10 +9,11 @@ class ProviderError(RuntimeError):
 
 
 class Ticketmaster:
-    def __init__(self, api_key, client=None, request_budget=1000, sleep=time.sleep):
+    def __init__(self, api_key, client=None, request_budget=1000, sleep=time.sleep, country="ES"):
         if not api_key:
-            raise ValueError("Set ticketmaster_api_key in the private concert configuration")
+            raise ValueError("Set ticketmaster_api_key in the private configuration")
         self.api_key = api_key
+        self.country = country
         self.client = client or httpx.Client(timeout=30)
         self.owns_client = client is None
         self.request_budget = request_budget
@@ -63,7 +64,7 @@ class Ticketmaster:
 
         def window(left, right):
             params = {
-                "countryCode": "ES", "classificationName": "music", "locale": "*",
+                "countryCode": self.country, "classificationName": "music", "locale": "*",
                 "startDateTime": left.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "endDateTime": right.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "size": 200, "page": 0, "sort": "date,asc",

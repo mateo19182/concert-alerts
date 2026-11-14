@@ -1,6 +1,7 @@
 """DICE reader: published sitemaps for discovery, schema.org JSON-LD on event pages for details.
 
-Used with DICE's permission; requests are throttled, budgeted and only for new or changed pages.
+DICE has no public listings API; ask DICE before enabling this source. Requests are throttled,
+budgeted and only for new or changed pages.
 """
 
 import json
@@ -12,12 +13,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import USER_AGENT
 from .ticketmaster import ProviderError
 
 INDEX = "https://dice.fm/sitemaps/sitemap.xml"
-USER_AGENT = "music-stack-concerts/0.1 (personal concert alerts; permitted by DICE)"
 # Slugs end in "<venue>-<city>-tickets"; the page's country is still checked before use.
-PLACES = (
+SPAIN_PLACES = (
     "a-coruna coruna la-coruna santiago-de-compostela santiago vigo ferrol lugo ourense pontevedra "
     "madrid barcelona valencia sevilla seville malaga granada cordoba cadiz jerez almeria huelva jaen "
     "bilbao donostia san-sebastian vitoria gasteiz pamplona iruna logrono santander oviedo gijon aviles "
@@ -27,12 +28,15 @@ PLACES = (
     "menorca tenerife las-palmas gran-canaria lanzarote fuerteventura marbella torremolinos benicassim "
     "alcala-de-henares mostoles getafe leganes fuenlabrada alcobendas cantabria asturias galicia spain espana"
 ).split()
-PLACE_PATTERN = re.compile(r"-(?:" + "|".join(re.escape(p) for p in PLACES) + r")-(?:[a-z0-9-]*-)?tickets?$")
 STATUS = {"EventCancelled": "cancelled", "EventPostponed": "postponed", "EventRescheduled": "rescheduled"}
 
 
-def spanish_slug(url):
-    return bool(PLACE_PATTERN.search(url.rstrip("/").rsplit("/", 1)[-1]))
+def place_pattern(places):
+    return re.compile(r"-(?:" + "|".join(re.escape(p) for p in places) + r")-(?:[a-z0-9-]*-)?tickets?$")
+
+
+def place_slug(url, pattern=place_pattern(SPAIN_PLACES)):
+    return bool(pattern.search(url.rstrip("/").rsplit("/", 1)[-1]))
 
 
 def sitemap_entries(xml):
@@ -96,8 +100,12 @@ def parse_event_page(html, url):
 
 
 class Dice:
-    def __init__(self, cache_path=None, client=None, sleep=time.sleep, page_budget=150, delay=2.0):
-        self.client = client or httpx.Client(timeout=30, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+    def __init__(self, cache_path=None, client=None, sleep=time.sleep, page_budget=150, delay=2.0,
+                 places=SPAIN_PLACES, user_agent=USER_AGENT):
+        self.client = client or httpx.Client(timeout=30, follow_redirects=True, headers={"User-Agent": user_agent})
+        if not places:
+            raise ValueError("Set dice_places to the city slugs of your country")
+        self.pattern = place_pattern(places)
         self.owns_client = client is None
         self.cache_path = Path(cache_path) if cache_path else None
         self.sleep = sleep
@@ -152,7 +160,7 @@ class Dice:
         temporary.replace(self.cache_path)
 
     def listed(self):
-        """Spanish event pages in DICE's sitemaps with their lastmod; fails closed."""
+        """Event pages in DICE's sitemaps naming a configured place, with their lastmod; fails closed."""
         index = sitemap_entries(self._get(INDEX))
         shards = [url for url in index if dice_url(url) and urlsplit(url).path.startswith("/sitemaps/")]
         if not shards:
@@ -160,10 +168,10 @@ class Dice:
         listed = {}
         for shard in shards:
             for url, lastmod in sitemap_entries(self._get(shard)).items():
-                if dice_url(url) and urlsplit(url).path.startswith("/event/") and spanish_slug(url):
+                if dice_url(url) and urlsplit(url).path.startswith("/event/") and place_slug(url, self.pattern):
                     listed[url] = lastmod
         if not listed:
-            raise ProviderError("DICE sitemaps listed no Spanish events; source incomplete")
+            raise ProviderError("DICE sitemaps listed no events in the configured places; source incomplete")
         return listed
 
     def events(self, start=None, end=None):
@@ -196,9 +204,9 @@ class Dice:
         return [page["event"] for page in pages.values() if page.get("event")]
 
 
-def fill_cache(cache_path, page_budget):
+def fill_cache(cache_path, page_budget, **options):
     """Warm the cache outside the timed service run; sends nothing."""
-    reader = Dice(cache_path=cache_path, page_budget=page_budget)
+    reader = Dice(cache_path=cache_path, page_budget=page_budget, **options)
     try:
         events = reader.events()
         return {"events": len(events), "pages_fetched": reader.pages_fetched, "pending": reader.pending,

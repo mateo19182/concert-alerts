@@ -1,0 +1,10 @@
+[Unit]
+Description=Alert when the concert check fails
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Replace with your notifier.
+ExecStart=%h/.local/bin/hermes send -q --to telegram "concert-alerts: check failed. See journalctl --user -u concert-alerts -n 50"
+UMask=0077
+NoNewPrivileges=true

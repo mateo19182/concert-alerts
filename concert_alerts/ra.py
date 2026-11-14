@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from . import USER_AGENT
 from .ticketmaster import ProviderError
 
 
@@ -26,9 +27,11 @@ query GET_EVENT_LISTINGS($filters: FilterInputDtoInput, $page: Int, $pageSize: I
 
 
 class ResidentAdvisor:
-    def __init__(self, cache_path=None, client=None, sleep=time.sleep, request_budget=300):
+    def __init__(self, cache_path=None, client=None, sleep=time.sleep, request_budget=300, country="ES",
+                 user_agent=USER_AGENT):
         self.client = client or httpx.Client(timeout=30, headers={
-            "User-Agent": "music-stack-concerts/0.1", "Referer": "https://ra.co/events"})
+            "User-Agent": user_agent, "Referer": "https://ra.co/events"})
+        self.country = country
         self.owns_client = client is None
         self.cache_path = Path(cache_path) if cache_path else None
         self.sleep = sleep
@@ -84,7 +87,7 @@ class ResidentAdvisor:
                 pass
         try:
             countries = self._query(AREAS_QUERY)["countries"]
-            self.areas = next(country["areas"] for country in countries if country["urlCode"] == "ES")
+            self.areas = next(country["areas"] for country in countries if country["urlCode"] == self.country)
             area_ids = [int(area["id"]) for area in self.areas]
             if not area_ids:
                 raise ValueError

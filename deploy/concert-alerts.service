@@ -1,0 +1,16 @@
+[Unit]
+Description=Concert alerts for library artists
+After=network-online.target
+Wants=network-online.target
+OnFailure=concert-alerts-failure.service
+
+[Service]
+Type=oneshot
+# PATH must include concert-alerts and your notify_command.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Dry run. Add --send after reviewing a real report.
+ExecStart=%h/.local/bin/concert-alerts sync
+TimeoutStartSec=10min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

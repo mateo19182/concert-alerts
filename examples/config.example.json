@@ -1,0 +1,18 @@
+{
+  "country": "ES",
+  "timezone": "Europe/Madrid",
+  "navidrome_db": "/path/to/navidrome/navidrome.db",
+  "artists_file": null,
+  "state_db": "state/events.db",
+  "report": "state/latest.json",
+  "ticketmaster_api_key": "",
+  "lookahead_days": 365,
+  "preferred_areas": [],
+  "max_nationwide_dates": 3,
+  "artist_overrides": {},
+  "ra_enabled": false,
+  "dice_enabled": false,
+  "dice_notify": false,
+  "dice_page_budget": 150,
+  "notify_command": ["hermes", "send", "-q", "--to", "telegram"]
+}

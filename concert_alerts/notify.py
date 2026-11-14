@@ -124,20 +124,23 @@ def source_alert(sources):
             + "\nListings from these sources may be missing until the next successful check.")
 
 
-def send_telegram(text, executable="hermes"):
-    command = shutil.which(executable)
-    if not command:
-        raise RuntimeError("Hermes is unavailable; notification remains pending")
+DEFAULT_NOTIFY_COMMAND = ("hermes", "send", "-q", "--to", "telegram")
+
+
+def send_message(text, command=DEFAULT_NOTIFY_COMMAND):
+    """Run the notifier with the Telegram-HTML message as its last argument; exit 0 means delivered."""
+    executable = shutil.which(command[0])
+    if not executable:
+        raise RuntimeError("Notifier is unavailable; notification remains pending")
     try:
-        result = subprocess.run([command, "send", "-q", "--to", "telegram", text],
-                                capture_output=True, timeout=45, check=False)
+        result = subprocess.run([executable, *command[1:], text], capture_output=True, timeout=45, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        raise RuntimeError("Telegram delivery failed; notification remains pending") from None
+        raise RuntimeError("Notification delivery failed; notification remains pending") from None
     if result.returncode:
-        raise RuntimeError("Hermes could not confirm delivery; notification remains pending")
+        raise RuntimeError("Notifier could not confirm delivery; notification remains pending")
 
 
-def deliver(pending, state, send=send_telegram, lookahead_days=365,
+def deliver(pending, state, send=send_message, lookahead_days=365,
             catalogue=None, max_nationwide_dates=3):
     sent = 0
     for entries, text in batches(pending, lookahead_days=lookahead_days,

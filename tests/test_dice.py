@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from concert_alerts.__main__ import sync
-from concert_alerts.dice import Dice, parse_event_page, sitemap_entries, spanish_slug
+from concert_alerts.dice import Dice, parse_event_page, sitemap_entries, place_slug
 from concert_alerts.events import select_dice_events
 from concert_alerts.library import Artist, ArtistIndex
 from concert_alerts.ticketmaster import ProviderError
@@ -61,7 +61,7 @@ def site(listing, pages, calls=None):
 def test_sitemap_parsing_and_spanish_prefilter():
     entries = sitemap_entries(sitemap({MADRID: "2026-10-29T03:34:09Z", LONDON: ""}))
     assert entries == {MADRID: "2026-10-29T03:34:09Z", LONDON: ""}
-    assert spanish_slug(MADRID) and spanish_slug(CORUNA) and not spanish_slug(LONDON)
+    assert place_slug(MADRID) and place_slug(CORUNA) and not place_slug(LONDON)
 
 
 def test_json_ld_event_is_parsed_without_trusting_markup():
@@ -115,7 +115,7 @@ def test_failures_are_reported_not_hidden(tmp_path):
     with pytest.raises(ProviderError, match="keep failing"):
         reader(site(urls, {u: (403,) for u in urls}), path).events()
     assert path.exists()  # progress is kept even when the run fails
-    with pytest.raises(ProviderError, match="no Spanish events"):
+    with pytest.raises(ProviderError, match="no events in the configured places"):
         reader(site({LONDON: "1"}, {})).events()
 
 
@@ -124,14 +124,14 @@ def index():
     return ArtistIndex([Artist("four", "Four Tet"), Artist("vulf", "Vulfpeck")])
 
 
-def test_matching_location_window_and_status(index):
+def test_matching_location_window_and_status(index, spain):
     events = [parse_event_page(page(), MADRID),
               parse_event_page(page(performers=("Unknown DJ",)), MADRID),
               {**parse_event_page(page(locality="A Coruña", postal="15001"), CORUNA), "url": CORUNA},
               parse_event_page(page(country="GB"), MADRID),
               parse_event_page(page(start="2026-10-01T20:00:00+02:00"), MADRID),
               parse_event_page(page(status="EventPostponed", start="2027-09-24T21:00:00+02:00"), MADRID)]
-    selected, unresolved, unknown = select_dice_events(events, index, START, START + timedelta(days=365))
+    selected, unresolved, unknown = select_dice_events(events, index, START, START + timedelta(days=365), spain)
     assert [e["id"] for e in selected] == ["dice:xe8o2l", "dice:ab12cd", "dice:xe8o2l"]
     first = selected[0]
     assert first["artists"] == {"four": "Four Tet"} and first["source"] == "DICE"
@@ -151,13 +151,13 @@ def test_dice_dates_are_held_until_notifications_are_enabled(tmp_path, monkeypat
 
     class NoTicketmaster:
         requests = 0
-        def __init__(self, key): pass
+        def __init__(self, key, **options): pass
         def events(self, start, end): return []
         def close(self): pass
 
     class FakeDice:
         requests, pages_fetched, pending = 3, 1, 0
-        def __init__(self, cache_path, page_budget): pass
+        def __init__(self, cache_path, page_budget, **options): pass
         def events(self, start, end): return [parse_event_page(page(), MADRID)]
         def close(self): pass
 

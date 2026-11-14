@@ -118,9 +118,9 @@ def test_ra_errors_are_bounded():
     assert p.requests == 2
 
 
-def test_normalization_country_postcode_and_artist_ids(ra_event):
+def test_normalization_country_postcode_and_artist_ids(ra_event, spain):
     index = ArtistIndex([Artist('four', 'Four Tet')])
-    events, unresolved, locations = select_ra_events([ra_event], index)
+    events, unresolved, locations = select_ra_events([ra_event], index, region=spain)
     event = events[0]
     assert event['id'] == 'ra:10' and event['city'] == 'A Coruña'
     assert event['highlight'] == 'A Coruña · Galicia'
